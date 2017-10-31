@@ -1,3 +1,16 @@
+
+#!usr/bin/env python
+# coding: utf-8
+
+"""
+Analisador e monitorador de tráfego de rede para detecção de ataques
+Trabalho de Conclusão de Curso (TCC)
+Ciência da Computação - Universidade Estadual do Ceará (UECE)
+
+Desenvolvido por: Anderson Bezerra Ribeiro
+Data: 30/10/2017
+"""
+
 from scapy.all import *
 #import threading
 
