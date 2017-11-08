@@ -12,46 +12,51 @@ Data: 30/10/2017
 """
 
 from Classes.myThread import MyThread
-from scapy.all import rdpcap, conf
-from time import sleep
+from scapy.all import sniff, conf
+from time import time, sleep
 
-import subprocess
+import threading
 
-def monitor(name):
-  print(name + " running...")
-  subprocess.run(["sudo", "tcpdump", "ip", "-Uni", "ens33", "-w", "./capture.pcap"])
-  #pkts = sniff(iface=conf.iface, count=50, store=1, filter="ip")
+def timer():
+  sleep(5*60)
+  tableMutex.acquire()
+  for i in range(len(ipTimer)):
+    lastReference = time()-ipTimer[i]
+    if lastReference > tempoLimite:
+      print("removed"+ipHeader[i]) # TESTE
+      ipTimer.pop(i)
+      ipHeader.pop(i)
+      ipTable.pop(i)
+  tableMutex.release()
+
+def monitorCallback(pkt):
+  ipPkt = pkt.payload
+  tableMutex.acquire()
+  if ipPkt.src not in ipHeader:
+    ipHeader.append(ipPkt.src)
+    ipTimer.append(time()-initialTime)
+    ipTable.append([])
+    ipTable[-1].append(pkt)
+  else:
+    ipTable[ipHeader.index(ipPkt.src)].append(pkt)
+  tableMutex.release()
 
 if __name__ == "__main__":
+  initialTime = time()
+  tempoLimite = 5*60 # 5 minutos
+  tableMutex = threading.Semaphore(1)
+
   ipHeader = []
+  ipTimer = []
   ipTable = []
 
-  thread_monitor = MyThread(monitor, ("Monitor",))
-  thread_monitor.start()
+  thread_timer = MyThread(timer, ())
+  thread_timer.start()
 
-  while True:
-    try:
-      pkts = rdpcap("./capture.pcap")
+  sniff(iface=conf.iface, count=50, filter="ip", prn=monitorCallback)
 
-      if pkts:
-        for pkt in pkts:
-          ipPkt = pkt.payload
-          if ipPkt.src not in ipHeader:
-            ipHeader.append(ipPkt.src)
-            ipTable.append([])
-            ipTable[-1].append(pkt)
-          else:
-            ipTable[ipHeader.index(ipPkt.src)].append(pkt)
-
-        for i in range(len(ipHeader)):
-          print(ipHeader[i])
-          for j in range(len(ipTable[i])):
-            print(ipTable[i][j].summary())
-          print(" ")
-          
-    except IOError as err:
-      print(err)
-      sleep(5)
-      continue
-
-    
+  for i in range(len(ipHeader)):
+    print(ipHeader[i])
+    for j in range(len(ipTable[i])):
+      print(ipTable[i][j].summary())
+    print(" ")
