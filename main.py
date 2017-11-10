@@ -14,6 +14,7 @@ Data: 30/10/2017
 from Classes.myThread import MyThread
 from scapy.all import *
 from time import time, sleep
+from random import randrange
 
 import threading
 
@@ -35,23 +36,42 @@ def test():
     sleep(10)
     send(IP(src=srcs[0], dst=dest)/TCP(), verbose=0)
 
+def stressTest():
+  print("Starting stress test...")
+  dest="10.10.10.10"
+  while True:
+    send(IP(src="192.30.253."+str(randrange(100)), dst=dest)/TCP(), verbose=0)
+    sleep(1)
+
+def printToFile(file):
+  for i in range(len(ipHeader)):
+    file.write(ipHeader[i] + "\n")
+    for j in range(len(ipTable[i])):
+      file.write(ipTable[i][j].summary() + "\n")
+    file.write("\n")
+
 def timer():
   print("Starting...")
   while True:
     sleep(checkTime)
+    rewrite = False
     tableMutex.acquire()
     for i in reversed(range(len(ipHeader))): # Começa a checar do último para evitar erro de indexação
       lastReference = time() - ipTimer[i]
       if lastReference > tempoLimite:
-        print("Removed package... IP:", ipHeader[i], "Last reference:", lastReference, "seconds ago")
+        print("- Removed package... IP:", ipHeader[i], "Last reference:", lastReference, "seconds ago")
         ipTimer.pop(i)
         ipHeader.pop(i)
         ipTable.pop(i)
+        rewrite = True
+    if rewrite:
+      with open("IP_Log.txt", "w") as file:
+        printToFile(file)
     tableMutex.release()
 
 def monitorCallback(pkt):
   ipPkt = pkt.payload
-  print("Package captured... IP:", ipPkt.src)
+  print("+ Package captured... IP:", ipPkt.src)
   tableMutex.acquire()
   if ipPkt.src not in ipHeader:
     ipHeader.append(ipPkt.src)
@@ -61,12 +81,14 @@ def monitorCallback(pkt):
   else:
     ipTimer[ipHeader.index(ipPkt.src)] = time()
     ipTable[ipHeader.index(ipPkt.src)].append(pkt)
+  with open("IP_Log.txt", "w") as file:
+    printToFile(file)
   tableMutex.release()
 
 if __name__ == "__main__":
   initialTime = time()
-  checkTime = 5
-  tempoLimite = 20 # 5 minutos
+  checkTime = 10
+  tempoLimite = 5*60 # 5 minutos
   tableMutex = threading.Semaphore(1)
 
   ipHeader = []
@@ -74,17 +96,14 @@ if __name__ == "__main__":
   ipTable = []
 
   thread_timer = MyThread(timer, ())
-  test_thread = MyThread(test, ())
+  test_thread = MyThread(stressTest, ())
   thread_timer.start()
   test_thread.start()
 
-  sniff(iface="root-eth0", count=20, filter="ip and tcp", prn=monitorCallback)
+  sniff(iface="root-eth0", filter="ip and tcp", prn=monitorCallback)
   #root --> 10.10.10.254
   #eth0 --> 10.10.10.10
 
-  print("-"*20)
-  for i in range(len(ipHeader)):
-    print(ipHeader[i])
-    for j in range(len(ipTable[i])):
-      print(ipTable[i][j].summary())
-    print(" ")
+  with open("IP_Log.txt") as file:
+    for line in file:
+      print(line.rstrip())
