@@ -56,20 +56,24 @@ def listToDF(row):
   return pandas.DataFrame(data=[row], columns=columns)
 
 def isRowInDF(row):
+  global ipDf
   return ipDf[(ipDf[columns[0]] == row[0]) & (ipDf[columns[1]] == row[1]) & (ipDf[columns[2]] == row[2]) & (ipDf[columns[3]] == row[3]) & (ipDf[columns[4]] == row[4])].empty
 
 def appendRowInDF(row):
+  global ipDf
   ipDf = ipDf.append(data=listToDF(row), ignore_index=True)
 
 def updateRowInDF(row):
+  global ipDf
   index = ipDf[(ipDf[columns[0]] == row[0]) & (ipDf[columns[1]] == row[1]) & (ipDf[columns[2]] == row[2]) & (ipDf[columns[3]] == row[3]) & (ipDf[columns[4]] == row[4])].index
   ipDf.loc[index, columns[6]] += 1
   ipDf.loc[index, columns[7]] = pandas.Timestamp('now')
 
 def deleteExpiredRowsInDF():
+  global ipDf
   df = ipDf[(pandas.Timestamp('now') - ipDf["Last reference"]) < tempoLimite]
   if df.equals(ipDf):
-    for index, row in ipDf[(pandas.Timestamp('now') - ipDf["Last reference"]) > tempoLimite]:
+    for index, row in ipDf[(pandas.Timestamp('now') - ipDf["Last reference"]) > tempoLimite].iterrows():
       print("- Removed package... Index:", index, "IpSource:", row[columns[0]], "IpDest:", row[columns[1]], "L2Protocol:", row[columns[2]], "SourcePort:", row[columns[3]], "DestPort:", row[columns[4]], "Package size:", row[columns[5]], "References:", row[columns[6]])
     return False
   else:
@@ -77,16 +81,18 @@ def deleteExpiredRowsInDF():
     return True
 
 def timer():
+  global ipDf
   print("Starting...")
   while True:
     sleep(checkTime)
     tableMutex.acquire()
     deleted = deleteExpiredRowsInDF()
     if deleted:
-      pandas.DataFrame.to_csv(file)
+      ipDf.to_csv(file)
     tableMutex.release()
 
 def monitorCallback(pkt):
+  global ipDf
   ipPkt = pkt.payload
   l2Pkt = ipPkt.payload
   if ipPkt.proto == 1:
@@ -103,7 +109,7 @@ def monitorCallback(pkt):
     updateRowInDF(rowPkt)
   else:
     appendRowInDF(rowPkt)
-  pandas.DataFrame.to_csv(file)
+  ipDf.to_csv(file)
   tableMutex.release()
 
 if __name__ == "__main__":
