@@ -27,41 +27,34 @@ def test():
   dest="10.10.10.10"
 
   for i in range(5):
-    send(Ether()/IP(src=srcs[0], dst=dest)/TCP(), verbose=0)
-  send(Ether()/IP(src=srcs[4], dst=dest)/TCP(), verbose=0)
+    send(IP(src=srcs[0], dst=dest)/TCP(), verbose=0)
+  send(IP(src=srcs[4], dst=dest)/TCP(), verbose=0)
   sleep(10)
   for i in range(4):
-    send(Ether()/IP(src=srcs[1], dst=dest)/TCP(), verbose=0)
-    send(Ether()/IP(src=srcs[2], dst=dest)/UDP(), verbose=0)
-    send(Ether()/IP(src=srcs[3], dst=dest)/TCP(), verbose=0)
-  send(Ether()/IP(src=srcs[0], dst=dest)/TCP(), verbose=0)
+    send(IP(src=srcs[1], dst=dest)/TCP(), verbose=0)
+    send(IP(src=srcs[2], dst=dest)/UDP(), verbose=0)
+    send(IP(src=srcs[3], dst=dest)/TCP(), verbose=0)
+  send(IP(src=srcs[0], dst=dest)/TCP(), verbose=0)
   sleep(10)
-  send(Ether()/IP(src=srcs[0], dst=dest)/TCP(), verbose=0)
+  send(IP(src=srcs[0], dst=dest)/TCP(), verbose=0)
 
 def stressTest():
   print("Starting stress test...")
   dest="10.10.10.10"
   while True:
-    send(Ether()/IP(src="192.30.253."+str(randrange(100)), dst=dest)/choice([TCP(),UDP()]), verbose=0)
+    send(IP(src="192.30.253."+str(randrange(100)), dst=dest)/choice([TCP(),UDP()]), verbose=0)
     sleep(1)
-
-def printToFile(file):
-  for i in range(len(ipHeader)):
-    file.write("IpSource: " + str(ipHeader[i][0]) + " IpDest: " + str(ipHeader[i][1]) + " L2Protocol: " + str(ipHeader[i][2]) + " SourcePort: " + str(ipHeader[i][3]) + " DestPort: " + str(ipHeader[i][4]) + "\n")
-    for j in range(len(ipTable[i])):
-      file.write(ipTable[i][j].summary() + "\n")
-    file.write("\n")
 
 def listToDF(row):
   return pandas.DataFrame(data=[row], columns=columns)
 
 def isRowInDF(row):
   global ipDf
-  return ipDf[(ipDf[columns[0]] == row[0]) & (ipDf[columns[1]] == row[1]) & (ipDf[columns[2]] == row[2]) & (ipDf[columns[3]] == row[3]) & (ipDf[columns[4]] == row[4])].empty
+  return not ipDf[(ipDf[columns[0]] == row[0]) & (ipDf[columns[1]] == row[1]) & (ipDf[columns[2]] == row[2]) & (ipDf[columns[3]] == row[3]) & (ipDf[columns[4]] == row[4])].empty
 
 def appendRowInDF(row):
   global ipDf
-  ipDf = ipDf.append(data=listToDF(row), ignore_index=True)
+  ipDf = ipDf.append(listToDF(row), ignore_index=True)
 
 def updateRowInDF(row):
   global ipDf
@@ -71,12 +64,12 @@ def updateRowInDF(row):
 
 def deleteExpiredRowsInDF():
   global ipDf
-  df = ipDf[(pandas.Timestamp('now') - ipDf["Last reference"]) < tempoLimite]
+  df = ipDf[(pandas.Timestamp('now') - ipDf["Last reference"]) <= tempoLimite]
   if df.equals(ipDf):
-    for index, row in ipDf[(pandas.Timestamp('now') - ipDf["Last reference"]) > tempoLimite].iterrows():
-      print("- Removed package... Index:", index, "IpSource:", row[columns[0]], "IpDest:", row[columns[1]], "L2Protocol:", row[columns[2]], "SourcePort:", row[columns[3]], "DestPort:", row[columns[4]], "Package size:", row[columns[5]], "References:", row[columns[6]])
     return False
   else:
+    for index, row in ipDf[(pandas.Timestamp('now') - ipDf["Last reference"]) > tempoLimite].iterrows():
+      print("- Removed package... Index:", index, "IpSource:", row[columns[0]], "IpDest:", row[columns[1]], "L2Protocol:", row[columns[2]], "SourcePort:", row[columns[3]], "DestPort:", row[columns[4]], "Package size:", row[columns[5]], "References:", row[columns[6]])
     ipDf = df
     return True
 
@@ -114,8 +107,8 @@ def monitorCallback(pkt):
 
 if __name__ == "__main__":
   file = "IP_DataFrame.csv"
-  checkTime = 30 # 30 segundos
-  tempoLimite = pandas.Timedelta('15m') # 15 minutos
+  checkTime = 5 # 30 segundos
+  tempoLimite = pandas.Timedelta('20s') # 15 minutos
   tableMutex = threading.Semaphore(1)
 
   #Criando DataFrame e definindo tipos
@@ -130,7 +123,7 @@ if __name__ == "__main__":
   thread_timer.start()
   test_thread.start()
 
-  sniff(iface="root-eth0", filter="ip", prn=monitorCallback)
+  sniff(iface="root-eth0", filter="ip", prn=monitorCallback, count=20)
   #root --> 10.10.10.254
   #eth0 --> 10.10.10.10
 
