@@ -44,6 +44,12 @@ def stressTest():
   while True:
     send(IP(src="192.30.253."+str(randrange(100)), dst=dest)/choice([TCP(),UDP()]), verbose=0)
 
+def ipInt(ip):
+  ipInt = ''
+  for i in ip.split('.'):
+    ipInt += i
+  return int(ipInt)
+
 def listToDF(row):
   return pd.DataFrame(data=[row], columns=columns)
 
@@ -93,7 +99,7 @@ def monitorCallback(pkt):
   elif ipPkt.proto == 17:
     l2Protocol = "udp"
 
-  rowPkt = [ipPkt.src, ipPkt.dst, l2Protocol, l2Pkt.sport, l2Pkt.dport, len(pkt), pd.to_datetime("now")]
+  rowPkt = [ipInt(ipPkt.src), ipInt(ipPkt.dst), l2Protocol, l2Pkt.sport, l2Pkt.dport, len(pkt), pd.to_datetime("now")]
   print("+ Package captured... IpSource:", rowPkt[0], "IpDest:", rowPkt[1], "L2Protocol:", rowPkt[2], "SourcePort:", rowPkt[3], "DestPort:", rowPkt[4])
   tableMutex.acquire()
   if isRowInDF(rowPkt):
@@ -112,7 +118,7 @@ if __name__ == "__main__":
   #Criando DataFrame e definindo tipos
   columns = ["IP source", "IP destiny", "L2 protocol", "Source port", "Destiny port", "Package size", "Last reference"]
   ipDf = pd.DataFrame(columns = columns)
-  ipDf[columns[3:6]] = ipDf[columns[3:6]].astype("int")
+  ipDf[columns[:6]] = ipDf[columns[:6]].astype("int")
   ipDf["Last reference"] = pd.to_datetime(ipDf["Last reference"])
 
   thread_timer = MyThread(timer, ())
