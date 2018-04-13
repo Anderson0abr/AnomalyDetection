@@ -15,9 +15,13 @@ from Classes.myThread import MyThread
 from scapy.all import *
 from time import time, sleep
 from random import randrange, choice
+from sklearn import preprocessing 
+from sklearn_pandas import DataFrameMapper
+from sklearn.covariance import EllipticEnvelope
 
 import threading
 import pandas as pd
+import warnings
 
 def test():
   #checktime 5s limite 20s
@@ -41,8 +45,9 @@ def test():
 def stressTest():
   print("Starting stress test...")
   dest="10.10.10.10"
-  while True:
-    send(IP(src="192.30.253."+str(randrange(100)), dst=dest)/choice([TCP(),UDP()]), verbose=0)
+  for i in range(3000):
+    send(IP(src=str(randrange(255))+"."+str(randrange(255))+"."+str(randrange(255))+"."+str(randrange(255)), dst=dest)/choice([TCP(),UDP()]), verbose=0)
+  print("Stopping stress test...")
 
 def ipInt(ip):
   ipInt = ''
@@ -72,35 +77,35 @@ def deleteExpiredRowsInDF():
   if df.equals(ipDf):
     return False
   else:
-    for index, row in ipDf[(pd.Timestamp('now') - ipDf["Last reference"]) > tempoLimite].iterrows():
-      print("- Removed package... Index:", index, "IpSource:", row[columns[0]], "IpDest:", row[columns[1]], "L2Protocol:", row[columns[2]], "SourcePort:", row[columns[3]], "DestPort:", row[columns[4]], "Package size:", row[columns[5]])
     ipDf = df
     return True
 
 def timer():
-  global ipDf
-  print("Starting...")
-  while True:
+  print("Starting timer thread...")
+  global ipDf, keep_timer, tableMutex
+  while keep_timer:
     sleep(checkTime)
     tableMutex.acquire()
     deleted = deleteExpiredRowsInDF()
     if deleted:
       ipDf[["IP source", "IP destiny", "L2 protocol", "Source port", "Destiny port", "Package size"]].to_csv(file)
     tableMutex.release()
+  print("Stopping timer thread...")
+
+def l2Proto(pkt):
+  if pkt.proto == 6:
+    l2Protocol = "tcp"
+  elif pkt.proto == 17:
+    l2Protocol = "udp"
+  return l2Protocol
 
 def monitorCallback(pkt):
-  global ipDf
+  global ipDf, tableMutex
   ipPkt = pkt.payload
   l2Pkt = ipPkt.payload
-  if ipPkt.proto == 1:
-    l2Protocol = "icmp"
-  elif ipPkt.proto == 6:
-    l2Protocol = "tcp"
-  elif ipPkt.proto == 17:
-    l2Protocol = "udp"
+  l2Protocol = l2Proto(pkt)
 
   rowPkt = [ipInt(ipPkt.src), ipInt(ipPkt.dst), l2Protocol, l2Pkt.sport, l2Pkt.dport, len(pkt), pd.to_datetime("now")]
-  print("+ Package captured... IpSource:", rowPkt[0], "IpDest:", rowPkt[1], "L2Protocol:", rowPkt[2], "SourcePort:", rowPkt[3], "DestPort:", rowPkt[4])
   tableMutex.acquire()
   if isRowInDF(rowPkt):
     updateRowInDF(rowPkt)
@@ -109,26 +114,76 @@ def monitorCallback(pkt):
   ipDf[["IP source", "IP destiny", "L2 protocol", "Source port", "Destiny port", "Package size"]].to_csv(file)
   tableMutex.release()
 
+def predict(pkt):
+  ###
+  global ipDf
+  ###
+  global clf, mapper, tableMutex
+  ipPkt = pkt.payload
+  l2Pkt = ipPkt.payload
+  l2Protocol = l2Proto(ipPkt)
+
+  rowPkt = [ipInt(ipPkt.src), ipInt(ipPkt.dst), l2Protocol, l2Pkt.sport, l2Pkt.dport, len(pkt)]
+  X = mapper.transform(listToDF(rowPkt))
+  y_pred = clf.predict(X)
+
+  ###
+  tableMutex.acquire()
+  appendRowInDF(rowPkt)
+  ipDf[["IP source", "IP destiny", "L2 protocol", "Source port", "Destiny port", "Package size"]].to_csv("TestSet.csv")
+  tableMutex.release()
+  ###
+
+  if(not bool(y_pred)): # Anomalia detectada
+    sendToSolver(pkt)
+
+def sendToSolver(pkt):
+  print("Sending package to solver...")
+  # send(pkt)
+  pass
+
 if __name__ == "__main__":
-  file = "IP_DataFrame2.csv"
+  warnings.filterwarnings(action='ignore')
+  file = "Profile.csv"
   checkTime = 30 # 30 segundos
   tempoLimite = pd.Timedelta('15m') # 15 minutos
   tableMutex = threading.Semaphore(1)
+  keep_timer = True
 
   #Criando DataFrame e definindo tipos
   columns = ["IP source", "IP destiny", "L2 protocol", "Source port", "Destiny port", "Package size", "Last reference"]
   ipDf = pd.DataFrame(columns = columns)
-  ipDf[columns[:6]] = ipDf[columns[:6]].astype("int")
+  ipDf[columns[:2]] = ipDf[columns[:2]].astype("int")
+  ipDf[columns[3:-1]] = ipDf[columns[3:-1]].astype("int")
   ipDf["Last reference"] = pd.to_datetime(ipDf["Last reference"])
 
   thread_timer = MyThread(timer, ())
   test_thread = MyThread(stressTest, ())
   thread_timer.start()
   test_thread.start()
+  
 
   sniff(iface="root-eth0", filter="ip", prn=monitorCallback, count=1000)
   #root --> 10.10.10.254
   #eth0 --> 10.10.10.10
 
-  #for index, row in ipDf.iterrows():
-  #  print("Index:", index, "IpSource:", row[columns[0]], "IpDest:", row[columns[1]], "L2Protocol:", row[columns[2]], "SourcePort:", row[columns[3]], "DestPort:", row[columns[4]], "Package size:", row[columns[5]])
+  profile = pd.read_csv(file, index_col = 0)
+  profile["L2 protocol"] = profile["L2 protocol"].astype("category")
+
+  mapper = DataFrameMapper([(["IP source", "IP destiny"], preprocessing.StandardScaler()),
+                            ("L2 protocol", preprocessing.LabelBinarizer()),
+                            (["Source port", "Destiny port", "Package size"], preprocessing.StandardScaler())
+                          ])
+  mapper.fit(profile)
+
+  clf = EllipticEnvelope()
+  clf.fit(mapper.transform(profile))
+
+  ###
+  columns = columns[:-1]
+  ipDf = pd.DataFrame(columns = columns)
+  ipDf[columns[:2]] = ipDf[columns[:2]].astype("int")
+  ipDf[columns[3:-1]] = ipDf[columns[3:-1]].astype("int")
+  ###
+
+  sniff(iface="root-eth0", filter="ip", prn=predict, count=2000)
