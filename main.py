@@ -11,6 +11,13 @@ Desenvolvido por: Anderson Bezerra Ribeiro
 Data: 30/10/2017
 """
 
+import threading
+import pandas as pd
+import warnings
+import logging
+
+logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
+
 from Classes.myThread import MyThread
 from scapy.all import *
 from time import time, sleep
@@ -19,9 +26,6 @@ from sklearn import preprocessing
 from sklearn_pandas import DataFrameMapper
 from sklearn.covariance import EllipticEnvelope
 
-import threading
-import pandas as pd
-import warnings
 
 def test():
   #checktime 5s limite 20s
@@ -44,8 +48,9 @@ def test():
 
 def stressTest():
   print("Starting stress test...")
+  global keep_test
   dest="10.10.10.10"
-  for i in range(3000):
+  while keep_test:
     send(IP(src=str(randrange(255))+"."+str(randrange(255))+"."+str(randrange(255))+"."+str(randrange(255)), dst=dest)/choice([TCP(),UDP()]), verbose=0)
   print("Stopping stress test...")
 
@@ -83,13 +88,14 @@ def deleteExpiredRowsInDF():
 def timer():
   print("Starting timer thread...")
   global ipDf, keep_timer, tableMutex
+  sleep(checkTime)
   while keep_timer:
-    sleep(checkTime)
     tableMutex.acquire()
     deleted = deleteExpiredRowsInDF()
     if deleted:
       ipDf[["IP source", "IP destiny", "L2 protocol", "Source port", "Destiny port", "Package size"]].to_csv(file)
     tableMutex.release()
+    sleep(checkTime)
   print("Stopping timer thread...")
 
 def l2Proto(pkt):
@@ -115,24 +121,14 @@ def monitorCallback(pkt):
   tableMutex.release()
 
 def predict(pkt):
-  ###
-  global ipDf
-  ###
-  global clf, mapper, tableMutex
+  global clf, mapper
   ipPkt = pkt.payload
   l2Pkt = ipPkt.payload
   l2Protocol = l2Proto(ipPkt)
 
   rowPkt = [ipInt(ipPkt.src), ipInt(ipPkt.dst), l2Protocol, l2Pkt.sport, l2Pkt.dport, len(pkt)]
-  X = mapper.transform(listToDF(rowPkt))
+  X = mapper.transform(pd.DataFrame([rowPkt], columns=columns[:-1]))
   y_pred = clf.predict(X)
-
-  ###
-  tableMutex.acquire()
-  appendRowInDF(rowPkt)
-  ipDf[["IP source", "IP destiny", "L2 protocol", "Source port", "Destiny port", "Package size"]].to_csv("TestSet.csv")
-  tableMutex.release()
-  ###
 
   if(not bool(y_pred)): # Anomalia detectada
     sendToSolver(pkt)
@@ -149,6 +145,7 @@ if __name__ == "__main__":
   tempoLimite = pd.Timedelta('15m') # 15 minutos
   tableMutex = threading.Semaphore(1)
   keep_timer = True
+  keep_test = True
 
   #Criando DataFrame e definindo tipos
   columns = ["IP source", "IP destiny", "L2 protocol", "Source port", "Destiny port", "Package size", "Last reference"]
@@ -167,6 +164,8 @@ if __name__ == "__main__":
   #root --> 10.10.10.254
   #eth0 --> 10.10.10.10
 
+  keep_timer=False
+  print("Profile defined")
   profile = pd.read_csv(file, index_col = 0)
   profile["L2 protocol"] = profile["L2 protocol"].astype("category")
 
@@ -179,11 +178,7 @@ if __name__ == "__main__":
   clf = EllipticEnvelope()
   clf.fit(mapper.transform(profile))
 
-  ###
-  columns = columns[:-1]
-  ipDf = pd.DataFrame(columns = columns)
-  ipDf[columns[:2]] = ipDf[columns[:2]].astype("int")
-  ipDf[columns[3:-1]] = ipDf[columns[3:-1]].astype("int")
-  ###
+  print("Initializing monitor")
 
-  sniff(iface="root-eth0", filter="ip", prn=predict, count=2000)
+  sniff(iface="root-eth0", filter="ip", prn=predict, count=1000)
+  keep_test=False
