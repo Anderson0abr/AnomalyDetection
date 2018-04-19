@@ -51,13 +51,13 @@ def stressTest():
   global keep_test
   dest="10.10.10.10"
   while keep_test:
-    send(IP(src=str(randrange(255))+"."+str(randrange(255))+"."+str(randrange(255))+"."+str(randrange(255)), dst=dest)/choice([TCP(),UDP()]), verbose=0)
+    send(IP(src=str(randrange(256))+"."+str(randrange(256))+"."+str(randrange(256))+"."+str(randrange(256)), dst=dest)/choice([TCP(),UDP()]), verbose=0)
   print("Stopping stress test...")
 
 def ipInt(ip):
   ipInt = ''
   for i in ip.split('.'):
-    ipInt += i
+    ipInt += '0' * (3-len(i)) + i
   return int(ipInt)
 
 def listToDF(row):
@@ -122,11 +122,18 @@ def monitorCallback(pkt):
 
 def predict(pkt):
   global clf, mapper
+  ###
+  global testSet
+  ###
   ipPkt = pkt.payload
   l2Pkt = ipPkt.payload
   l2Protocol = l2Proto(ipPkt)
 
   rowPkt = [ipInt(ipPkt.src), ipInt(ipPkt.dst), l2Protocol, l2Pkt.sport, l2Pkt.dport, len(pkt)]
+  ###
+  testSet = testSet.append(pd.DataFrame([rowPkt], columns = columns[:-1]), ignore_index = True)
+  testSet.to_csv("TestSet.csv")
+  ###
   X = mapper.transform(pd.DataFrame([rowPkt], columns=columns[:-1]))
   y_pred = clf.predict(X)
 
@@ -156,11 +163,11 @@ if __name__ == "__main__":
 
   thread_timer = MyThread(timer, ())
   test_thread = MyThread(stressTest, ())
-  thread_timer.start()
+  #thread_timer.start()
   test_thread.start()
   
 
-  sniff(iface="root-eth0", filter="ip", prn=monitorCallback, count=1000)
+  #sniff(iface="root-eth0", filter="ip", prn=monitorCallback, count=1000)
   #root --> 10.10.10.254
   #eth0 --> 10.10.10.10
 
@@ -177,6 +184,12 @@ if __name__ == "__main__":
 
   clf = EllipticEnvelope()
   clf.fit(mapper.transform(profile))
+
+  ### Salva dados para teste
+  testSet = pd.DataFrame(columns = columns[:-1])
+  testSet[columns[:2]] = testSet[columns[:2]].astype("int")
+  testSet[columns[3:-1]] = testSet[columns[3:-1]].astype("int")
+  ###
 
   print("Initializing monitor")
 
