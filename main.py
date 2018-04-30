@@ -106,7 +106,13 @@ def l2Proto(pkt):
   return l2Protocol
 
 def monitorCallback(pkt):
-  global ipDf, tableMutex
+  global ipDf, tableMutex, bandwidth
+
+  if bandwidth == 0:
+    bandwidth = len(pkt)
+  else:
+    bandwidth = (bandwidth+len(pkt))/2
+
   ipPkt = pkt.payload
   l2Pkt = ipPkt.payload
   l2Protocol = l2Proto(pkt)
@@ -119,6 +125,24 @@ def monitorCallback(pkt):
     appendRowInDF(rowPkt)
   ipDf[["IP source", "IP destiny", "L2 protocol", "Source port", "Destiny port", "Package size"]].to_csv(file)
   tableMutex.release()
+
+def bandwidthMonitor():
+  print("Starting bandwidth monitor...")
+  global bandwidth, tempoLimite, bandwidthTolerance
+  sleep(10)
+  initialBandwidth = bandwidth
+  start = pd.Timestamp.now()
+
+  while True:
+    tempoDecorrido = pd.Timestamp.now()-start
+    if tempoDecorrido >= tempoLimite:
+      percentual = initialBandwidth*bandwidthTolerance
+      if initialBandwidth - percentual < bandwidth < initialBandwidth + percentual:
+        initialBandwidth = bandwidth
+        start = pd.Timestamp.now()
+      else:
+        callSolver("Bandwidth = {}. Expected {} < bandwidth < {}".format(bandwidth, initialBandwidth - percentual, initialBandwidth + percentual))
+        start = pd.Timestamp.now()
 
 def predict(pkt):
   global clf, mapper
@@ -138,21 +162,25 @@ def predict(pkt):
   y_pred = clf.predict(X)
 
   if(not bool(y_pred)): # Anomalia detectada
-    sendToSolver(pkt)
+    callSolver("Anomaly detected")
 
-def sendToSolver(pkt):
-  print("Sending package to solver...")
-  # send(pkt)
+def callSolver(msg):
+  print("{}. Calling solver...".format(msg))
   pass
 
 if __name__ == "__main__":
   warnings.filterwarnings(action='ignore')
   file = "Profile.csv"
+
+  bandwidth = 0.0
+  bandwidthTolerance = 0.25 # 25%
+
   checkTime = 30 # 30 segundos
-  tempoLimite = pd.Timedelta('15m') # 15 minutos
-  tableMutex = threading.Semaphore(1)
+  tempoLimite = pd.Timedelta('10s') # 15 minutos
   keep_timer = True
   keep_test = True
+
+  tableMutex = threading.Semaphore(1)
 
   #Criando DataFrame e definindo tipos
   columns = ["IP source", "IP destiny", "L2 protocol", "Source port", "Destiny port", "Package size", "Last reference"]
@@ -163,11 +191,13 @@ if __name__ == "__main__":
 
   thread_timer = MyThread(timer, ())
   test_thread = MyThread(stressTest, ())
-  #thread_timer.start()
+  bandwidth_thread = MyThread(bandwidthMonitor, ())
+  thread_timer.start()
   test_thread.start()
+  bandwidth_thread.start()
   
 
-  #sniff(iface="root-eth0", filter="ip", prn=monitorCallback, count=1000)
+  sniff(iface="root-eth0", filter="ip", prn=monitorCallback, count=1000)
   #root --> 10.10.10.254
   #eth0 --> 10.10.10.10
 
