@@ -12,6 +12,7 @@ Data: 30/10/2017
 """
 
 import threading
+import numpy as np
 import pandas as pd
 import warnings
 import logging
@@ -25,26 +26,6 @@ from random import randrange, choice
 from sklearn import preprocessing 
 from sklearn_pandas import DataFrameMapper
 from sklearn.covariance import EllipticEnvelope
-
-
-def test():
-  #checktime 5s limite 20s
-  print("Sending packages...")
-  #srcs=["www.github.com", "www.facebook.com", "www.google.com", "www.gmail.com", "www.9gag.com"]
-  srcs=["192.30.253.112", "157.24.12.35", "172.217.29.164", "216.58.202.229", "151.101.66.133"]
-  dest="10.10.10.10"
-
-  for i in range(5):
-    send(IP(src=srcs[0], dst=dest)/TCP(), verbose=0)
-  send(IP(src=srcs[4], dst=dest)/TCP(), verbose=0)
-  sleep(10)
-  for i in range(4):
-    send(IP(src=srcs[1], dst=dest)/TCP(), verbose=0)
-    send(IP(src=srcs[2], dst=dest)/UDP(), verbose=0)
-    send(IP(src=srcs[3], dst=dest)/TCP(), verbose=0)
-  send(IP(src=srcs[0], dst=dest)/TCP(), verbose=0)
-  sleep(10)
-  send(IP(src=srcs[0], dst=dest)/TCP(), verbose=0)
 
 def stressTest():
   print("Starting stress test...")
@@ -106,12 +87,9 @@ def l2Proto(pkt):
   return l2Protocol
 
 def monitorCallback(pkt):
-  global ipDf, tableMutex, bandwidth
+  global ipDf, tableMutex, bandwidth, parcialPackages
 
-  if bandwidth == 0:
-    bandwidth = len(pkt)
-  else:
-    bandwidth = (bandwidth+len(pkt))/2
+  bandwidth += len(pkt)
 
   ipPkt = pkt.payload
   l2Pkt = ipPkt.payload
@@ -126,43 +104,44 @@ def monitorCallback(pkt):
   ipDf[["IP source", "IP destiny", "L2 protocol", "Source port", "Destiny port", "Package size"]].to_csv(file)
   tableMutex.release()
 
-def bandwidthMonitor():
-  print("Starting bandwidth monitor...")
-  global bandwidth, tempoLimite, bandwidthTolerance
+def throughputMonitor():
+  print("Starting throughput monitor...")
+  global bandwidth, bandwidthCheckTime, throughputTolerance, bandwidthErrors, throughput
   sleep(10)
-  initialBandwidth = bandwidth
+  initialThroughput = bandwidth/10
   start = pd.Timestamp.now()
 
   while True:
     tempoDecorrido = pd.Timestamp.now()-start
-    if tempoDecorrido >= tempoLimite:
-      percentual = initialBandwidth*bandwidthTolerance
-      if initialBandwidth - percentual < bandwidth < initialBandwidth + percentual:
-        initialBandwidth = bandwidth
+    if tempoDecorrido >= bandwidthCheckTime:
+      throughput = bandwidth/tempoDecorrido.total_seconds()
+      percentual = initialThroughput*throughputTolerance
+      if initialThroughput - percentual < throughput < initialThroughput + percentual:
+        initialThroughput = throughput
         start = pd.Timestamp.now()
       else:
-        callSolver("Bandwidth = {}. Expected {} < bandwidth < {}".format(bandwidth, initialBandwidth - percentual, initialBandwidth + percentual))
+        bandwidthErrors += 1
+        callSolver("Throughput = {} bps. Expected {} < throughput < {}".format(str(np.round(throughput, 2))[:4], str(np.round(initialThroughput - percentual, 2))[:4], str(np.round(initialThroughput + percentual, 2))[:4]))
         start = pd.Timestamp.now()
+      bandwidth = 0.0
 
 def predict(pkt):
-  global clf, mapper
-  ###
-  global testSet
-  ###
+  global clf, mapper, bandwidth, totalPackages, anomalyErrors
+
+  totalPackages += 1
+  bandwidth += len(pkt)
+
   ipPkt = pkt.payload
   l2Pkt = ipPkt.payload
   l2Protocol = l2Proto(ipPkt)
 
   rowPkt = [ipInt(ipPkt.src), ipInt(ipPkt.dst), l2Protocol, l2Pkt.sport, l2Pkt.dport, len(pkt)]
-  ###
-  testSet = testSet.append(pd.DataFrame([rowPkt], columns = columns[:-1]), ignore_index = True)
-  testSet.to_csv("TestSet.csv")
-  ###
   X = mapper.transform(pd.DataFrame([rowPkt], columns=columns[:-1]))
   y_pred = clf.predict(X)
 
-  if(not bool(y_pred)): # Anomalia detectada
-    callSolver("Anomaly detected")
+  if(y_pred == -1): # Anomalia detectada
+    anomalyErrors += 1
+    callSolver("Anomaly {} detected".format(anomalyErrors))
 
 def callSolver(msg):
   print("{}. Calling solver...".format(msg))
@@ -172,11 +151,17 @@ if __name__ == "__main__":
   warnings.filterwarnings(action='ignore')
   file = "Profile.csv"
 
+  totalPackages = 0
+  anomalyErrors = 0
+
   bandwidth = 0.0
-  bandwidthTolerance = 0.25 # 25%
+  throughputTolerance = 0.30 # 30%
+  bandwidthErrors = 0
+  bandwidthCheckTime = pd.Timedelta('10s') # 10 segundos
+  throughput = 0.0 # taxa em bytes por segundo
 
   checkTime = 30 # 30 segundos
-  tempoLimite = pd.Timedelta('10s') # 15 minutos
+  tempoLimite = pd.Timedelta('15m') # 15 minutos
   keep_timer = True
   keep_test = True
 
@@ -191,10 +176,10 @@ if __name__ == "__main__":
 
   thread_timer = MyThread(timer, ())
   test_thread = MyThread(stressTest, ())
-  bandwidth_thread = MyThread(bandwidthMonitor, ())
+  throughput_thread = MyThread(throughputMonitor, ())
   thread_timer.start()
   test_thread.start()
-  bandwidth_thread.start()
+  throughput_thread.start()
   
 
   sniff(iface="root-eth0", filter="ip", prn=monitorCallback, count=1000)
@@ -215,13 +200,10 @@ if __name__ == "__main__":
   clf = EllipticEnvelope()
   clf.fit(mapper.transform(profile))
 
-  ### Salva dados para teste
-  testSet = pd.DataFrame(columns = columns[:-1])
-  testSet[columns[:2]] = testSet[columns[:2]].astype("int")
-  testSet[columns[3:-1]] = testSet[columns[3:-1]].astype("int")
-  ###
-
   print("Initializing monitor")
 
   sniff(iface="root-eth0", filter="ip", prn=predict, count=1000)
   keep_test=False
+
+  print("Anomaly errors: {}/{}".format(anomalyErrors,totalPackages))
+  print("Bandwidth errors:", bandwidthErrors)
