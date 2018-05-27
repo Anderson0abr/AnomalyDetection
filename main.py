@@ -20,6 +20,7 @@ import logging
 logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
 
 from Classes.myThread import MyThread
+from Classes.dfModel import DfModel
 from scapy.all import *
 from time import time, sleep
 from random import randrange, choice
@@ -28,12 +29,12 @@ from sklearn_pandas import DataFrameMapper
 from sklearn.covariance import EllipticEnvelope
 
 def stressTest():
-  print("Starting stress test...")
-  global keep_test
-  dest="10.10.10.10"
-  while keep_test:
-    send(IP(src=str(randrange(256))+"."+str(randrange(256))+"."+str(randrange(256))+"."+str(randrange(256)), dst=dest)/choice([TCP(),UDP()]), verbose=0)
-  print("Stopping stress test...")
+    print("Starting stress test...")
+    global keep_test
+    dest="10.10.10.10"
+    while keep_test:
+      send(IP(src=str(randrange(256))+"."+str(randrange(256))+"."+str(randrange(256))+"."+str(randrange(256)), dst=dest)/choice([TCP(),UDP()]), verbose=0)
+    print("Stopping stress test...")
 
 def ipInt(ip):
   ipInt = ''
@@ -41,40 +42,15 @@ def ipInt(ip):
     ipInt += '0' * (3-len(i)) + i
   return int(ipInt)
 
-def listToDF(row):
-  return pd.DataFrame(data=[row], columns=columns)
-
-def isRowInDF(row):
-  global ipDf
-  return not ipDf[(ipDf[columns[0]] == row[0]) & (ipDf[columns[1]] == row[1]) & (ipDf[columns[2]] == row[2]) & (ipDf[columns[3]] == row[3]) & (ipDf[columns[4]] == row[4])].empty
-
-def appendRowInDF(row):
-  global ipDf
-  ipDf = ipDf.append(listToDF(row), ignore_index=True)
-
-def updateRowInDF(row):
-  global ipDf
-  index = ipDf[(ipDf[columns[0]] == row[0]) & (ipDf[columns[1]] == row[1]) & (ipDf[columns[2]] == row[2]) & (ipDf[columns[3]] == row[3]) & (ipDf[columns[4]] == row[4])].index
-  ipDf.loc[index, columns[6]] = pd.Timestamp('now')
-
-def deleteExpiredRowsInDF():
-  global ipDf
-  df = ipDf[(pd.Timestamp('now') - ipDf["Last reference"]) <= tempo_limite]
-  if df.equals(ipDf):
-    return False
-  else:
-    ipDf = df
-    return True
-
 def timer():
   print("Starting timer thread...")
   global ipDf, keep_timer, tableMutex
   sleep(checkTime)
   while keep_timer:
     tableMutex.acquire()
-    deleted = deleteExpiredRowsInDF()
+    deleted = dfModel.deleteExpiredRowsInDF(ipDf)
     if deleted:
-      ipDf[["IP source", "IP destiny", "L2 protocol", "Source port", "Destiny port", "Package size"]].to_csv(file)
+      ipDf[["IP source", "IP destiny", "L2 protocol", "Source port", "Destiny port", "Package size"]].to_csv(profile_file)
     tableMutex.release()
     sleep(checkTime)
   print("Stopping timer thread...")
@@ -87,7 +63,7 @@ def l2Proto(pkt):
   return l2Protocol
 
 def monitorCallback(pkt):
-  global ipDf, tableMutex, bandwidth, parcialPackages
+  global ipDf, tableMutex, bandwidth
 
   bandwidth += len(pkt)
 
@@ -97,16 +73,16 @@ def monitorCallback(pkt):
 
   rowPkt = [ipInt(ipPkt.src), ipInt(ipPkt.dst), l2Protocol, l2Pkt.sport, l2Pkt.dport, len(pkt), pd.to_datetime("now")]
   tableMutex.acquire()
-  if isRowInDF(rowPkt):
-    updateRowInDF(rowPkt)
+  if dfModel.isRowInDF(rowPkt, ipDf):
+    ipDf = dfModel.updateRowInDF(rowPkt, ipDf)
   else:
-    appendRowInDF(rowPkt)
-  ipDf[["IP source", "IP destiny", "L2 protocol", "Source port", "Destiny port", "Package size"]].to_csv(file)
+    ipDf = dfModel.appendRowInDF(rowPkt, ipDf)
+  ipDf[["IP source", "IP destiny", "L2 protocol", "Source port", "Destiny port", "Package size"]].to_csv(profile_file)
   tableMutex.release()
 
 def throughputMonitor():
   print("Starting throughput monitor...")
-  global bandwidth, bandwidth_Checktime, throughput_tolerance, bandwidth_errors, throughput, profile_time
+  global bandwidth, bandwidth_errors, throughput, profile_time
   if profile_time < bandwidth_Checktime:
     sleep((bandwidth_Checktime - profile_time).total_seconds())
     initial_throughput = bandwidth/bandwidth_Checktime.total_seconds()
@@ -143,7 +119,7 @@ def predict(pkt):
   rowPkt = [ipInt(ipPkt.src), ipInt(ipPkt.dst), l2Protocol, l2Pkt.sport, l2Pkt.dport, len(pkt)]
 
   test_set = test_set.append(pd.DataFrame([rowPkt], columns = columns[:-1]), ignore_index = True)
-  test_set.to_csv("TestSet.csv")
+  test_set.to_csv(test_file)
 
   X = mapper.transform(pd.DataFrame([rowPkt], columns=columns[:-1]))
   y_pred = clf.predict(X)
@@ -159,19 +135,19 @@ def callSolver(msg):
 if __name__ == "__main__":
   start_time = pd.Timestamp.now()
   warnings.filterwarnings(action='ignore')
-  file = "Profile.csv"
+  profile_file = "Profile.csv"
+  test_file = "Test.csv"
 
   total_packages = 0
   anomaly_errors = 0
 
   bandwidth = 0.0
-  throughput_tolerance = 0.10 # 10%
+  throughput_tolerance = 0.20 # 20%
   bandwidth_errors = 0
   bandwidth_Checktime = pd.Timedelta('1m') # 1 minuto
   throughput = 0.0 # taxa em bytes por segundo
 
-  checkTime = 30 # 30 segundos
-  tempo_limite = pd.Timedelta('15m') # 15 minutos
+  checkTime = pd.Timedelta('30s').total_seconds() # 30 segundos
   keep_timer = True
   keep_test = True
 
@@ -184,14 +160,15 @@ if __name__ == "__main__":
   ipDf[columns[3:-1]] = ipDf[columns[3:-1]].astype("int")
   ipDf["Last reference"] = pd.to_datetime(ipDf["Last reference"])
 
+  dfModel = DfModel(columns)
   thread_timer = MyThread(timer, ())
   test_thread = MyThread(stressTest, ())
   throughput_thread = MyThread(throughputMonitor, ())
-  #thread_timer.start()
-  test_thread.start()
-  
 
-  #sniff(iface="root-eth0", filter="ip", prn=monitorCallback, count=1000)
+  thread_timer.start()
+  test_thread.start()
+
+  sniff(iface="root-eth0", filter="ip", prn=monitorCallback, timeout=pd.Timedelta('10m').total_seconds())
   #root --> 10.10.10.254
   #eth0 --> 10.10.10.10
 
@@ -201,7 +178,7 @@ if __name__ == "__main__":
 
   throughput_thread.start()
 
-  profile = pd.read_csv(file, index_col = 0)
+  profile = pd.read_csv(profile_file, index_col = 0)
   profile["L2 protocol"] = profile["L2 protocol"].astype("category")
 
   mapper = DataFrameMapper([(["IP source", "IP destiny"], preprocessing.StandardScaler()),
@@ -219,10 +196,8 @@ if __name__ == "__main__":
 
   print("Initializing monitor")
 
-  sniff(iface="root-eth0", filter="ip", prn=predict)
+  sniff(iface="root-eth0", filter="ip", prn=predict, timeout=pd.Timedelta('20m').total_seconds())
   keep_test=False
 
   print("Anomaly errors: {}/{}".format(anomaly_errors, total_packages))
   print("Bandwidth errors:", bandwidth_errors)
-  print("Profile time:", profile_time)
-  print("Program duration:", pd.Timestamp.now() - start_time)
