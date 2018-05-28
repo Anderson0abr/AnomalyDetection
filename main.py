@@ -33,7 +33,11 @@ def stressTest():
     global keep_test
     dest="10.10.10.10"
     while keep_test:
-      send(IP(src=str(randrange(256))+"."+str(randrange(256))+"."+str(randrange(256))+"."+str(randrange(256)), dst=dest)/choice([TCP(),UDP()]), verbose=0)
+      ip_bin = format(int(np.round((2**32-1)*np.random.random())),'b')
+      ip_bin = '0'*(32-len(ip_bin)) + ip_bin
+      ip = [ip_bin[:-24], ip_bin[-24:-16], ip_bin[-16:-8], ip_bin[-8:]]
+      origin = '.'.join([str(int(x,2)) for x in ip])
+      send(IP(src=origin, dst=dest)/choice([TCP(),UDP()]), verbose=0)
     print("Stopping stress test...")
 
 def ipInt(ip):
