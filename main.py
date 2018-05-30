@@ -22,8 +22,8 @@ logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
 from Classes.myThread import MyThread
 from Classes.dfModel import DfModel
 from scapy.all import *
-from time import time, sleep
-from random import randrange, choice
+from time import sleep
+from random import choice
 from sklearn import preprocessing 
 from sklearn_pandas import DataFrameMapper
 from sklearn.covariance import EllipticEnvelope
@@ -33,7 +33,11 @@ def stressTest():
     global keep_test
     dest="10.10.10.10"
     while keep_test:
-      send(IP(src=str(randrange(256))+"."+str(randrange(256))+"."+str(randrange(256))+"."+str(randrange(256)), dst=dest)/choice([TCP(),UDP()]), verbose=0)
+      ip_bin = format(int(np.round((2**32-1)*np.random.random())),'b')
+      ip_bin = '0'*(32-len(ip_bin)) + ip_bin
+      ip = [ip_bin[:-24], ip_bin[-24:-16], ip_bin[-16:-8], ip_bin[-8:]]
+      origin = '.'.join([str(int(x,2)) for x in ip])
+      send(IP(src=origin, dst=dest)/choice([TCP(),UDP()]), verbose=0)
     print("Stopping stress test...")
 
 def ipInt(ip):
@@ -44,9 +48,9 @@ def ipInt(ip):
 
 def timer():
   print("Starting timer thread...")
-  global ipDf, keep_timer, tableMutex
+  global ipDf, profile_phase, tableMutex
   sleep(checkTime)
-  while keep_timer:
+  while profile_phase:
     tableMutex.acquire()
     deleted = dfModel.deleteExpiredRowsInDF(ipDf)
     if deleted:
@@ -62,9 +66,33 @@ def l2Proto(pkt):
     l2Protocol = "udp"
   return l2Protocol
 
-def monitorCallback(pkt):
-  global ipDf, tableMutex, bandwidth
+def throughputMonitor():
+  print("Starting throughput monitor...")
+  global bandwidth, throughput_errors, throughput, profile_phase, throughput_list
+  
+  start_time = pd.Timestamp.now()
+  while profile_phase:
+    time_running = pd.Timestamp.now() - start_time
+    if time_running >= bandwidth_checktime:
+      throughput_list.append(bandwidth/time_running.total_seconds())
+      start_time = pd.Timestamp.now()
+      bandwidth = 0.0
 
+  start_time = pd.Timestamp.now()
+  while True:
+    time_running = pd.Timestamp.now() - start_time
+    if time_running >= bandwidth_checktime:
+      throughput = bandwidth/time_running.total_seconds()
+      if not (throughput_mean - throughput_deviation < throughput < throughput_mean + throughput_deviation):
+        throughput_errors += 1
+        callSolver("Throughput = {} bps. Expected {} < throughput < {}".format(str(np.round(throughput, 2))[:4], str(np.round(throughput_mean - throughput_deviation, 2))[:4], str(np.round(throughput_mean + throughput_deviation, 2))[:4]))
+      start_time = pd.Timestamp.now()
+      bandwidth = 0.0
+
+def createProfile(pkt):
+  global ipDf, tableMutex, bandwidth, profile_packages
+
+  profile_packages += 1
   bandwidth += len(pkt)
 
   ipPkt = pkt.payload
@@ -80,36 +108,10 @@ def monitorCallback(pkt):
   ipDf[["IP source", "IP destiny", "L2 protocol", "Source port", "Destiny port", "Package size"]].to_csv(profile_file)
   tableMutex.release()
 
-def throughputMonitor():
-  print("Starting throughput monitor...")
-  global bandwidth, bandwidth_errors, throughput, profile_time
-  if profile_time < bandwidth_Checktime:
-    sleep((bandwidth_Checktime - profile_time).total_seconds())
-    initial_throughput = bandwidth/bandwidth_Checktime.total_seconds()
-  else:
-    initial_throughput = bandwidth/profile_time.total_seconds()
-  bandwidth = 0.0
-  start = pd.Timestamp.now()
-
-  while True:
-    tempoDecorrido = pd.Timestamp.now()-start
-    if tempoDecorrido >= bandwidth_Checktime:
-      throughput = bandwidth/tempoDecorrido.total_seconds()
-      percentual = initial_throughput*throughput_tolerance
-      if initial_throughput - percentual < throughput < initial_throughput + percentual:
-        initial_throughput = throughput
-        start = pd.Timestamp.now()
-        print("bandwidth:", bandwidth)
-      else:
-        bandwidth_errors += 1
-        callSolver("Throughput = {} bps. Expected {} < throughput < {}".format(str(np.round(throughput, 2))[:4], str(np.round(initial_throughput - percentual, 2))[:4], str(np.round(initial_throughput + percentual, 2))[:4]))
-        start = pd.Timestamp.now()
-      bandwidth = 0.0
-
 def predict(pkt):
-  global clf, mapper, bandwidth, total_packages, anomaly_errors, test_set
+  global clf, mapper, bandwidth, predicted_packages , anomaly_errors, test_set
 
-  total_packages += 1
+  predicted_packages += 1
   bandwidth += len(pkt)
 
   ipPkt = pkt.payload
@@ -138,17 +140,18 @@ if __name__ == "__main__":
   profile_file = "Profile.csv"
   test_file = "Test.csv"
 
-  total_packages = 0
+  profile_packages = 0
+  predicted_packages = 0
   anomaly_errors = 0
 
   bandwidth = 0.0
-  throughput_tolerance = 0.20 # 20%
-  bandwidth_errors = 0
-  bandwidth_Checktime = pd.Timedelta('1m') # 1 minuto
+  bandwidth_checktime = pd.Timedelta('1m') 
   throughput = 0.0 # taxa em bytes por segundo
+  throughput_errors = 0
+  throughput_list = []
 
   checkTime = pd.Timedelta('30s').total_seconds() # 30 segundos
-  keep_timer = True
+  profile_phase = True
   keep_test = True
 
   tableMutex = threading.Semaphore(1)
@@ -167,16 +170,17 @@ if __name__ == "__main__":
 
   thread_timer.start()
   test_thread.start()
+  throughput_thread.start()
 
-  sniff(iface="root-eth0", filter="ip", prn=monitorCallback, timeout=pd.Timedelta('10m').total_seconds())
+  sniff(iface="root-eth0", filter="ip", prn=createProfile, timeout=pd.Timedelta('10m').total_seconds())
   #root --> 10.10.10.254
   #eth0 --> 10.10.10.10
 
-  keep_timer=False
-  profile_time = pd.Timestamp.now() - start_time
-  print("Profile defined")
+  profile_phase=False
+  print("Profile defined. {} packages captured.".format(profile_packages))
 
-  throughput_thread.start()
+  throughput_mean = np.mean(throughput_list)
+  throughput_deviation = np.std(throughput_list)
 
   profile = pd.read_csv(profile_file, index_col = 0)
   profile["L2 protocol"] = profile["L2 protocol"].astype("category")
@@ -199,5 +203,7 @@ if __name__ == "__main__":
   sniff(iface="root-eth0", filter="ip", prn=predict, timeout=pd.Timedelta('20m').total_seconds())
   keep_test=False
 
-  print("Anomaly errors: {}/{}".format(anomaly_errors, total_packages))
-  print("Bandwidth errors:", bandwidth_errors)
+  print("Throughput mean: ", throughput_mean)
+  print("Throughput standart deviation: ", throughput_deviation)
+  print("Anomaly errors: {}/{}".format(anomaly_errors, predicted_packages))
+  print("Throughput errors:", throughput_errors)
