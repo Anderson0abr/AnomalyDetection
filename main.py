@@ -68,7 +68,7 @@ def l2Proto(pkt):
 
 def throughputMonitor():
   print("Starting throughput monitor...")
-  global bandwidth, throughput_errors, throughput, profile_phase, throughput_list
+  global bandwidth, throughput_errors, throughput, throughput_check, profile_phase, throughput_list
   
   start_time = pd.Timestamp.now()
   while profile_phase:
@@ -82,6 +82,7 @@ def throughputMonitor():
   while True:
     time_running = pd.Timestamp.now() - start_time
     if time_running >= bandwidth_checktime:
+      throughput_check += 1
       throughput = bandwidth/time_running.total_seconds()
       if not (throughput_mean - throughput_deviation < throughput < throughput_mean + throughput_deviation):
         throughput_errors += 1
@@ -143,6 +144,7 @@ if __name__ == "__main__":
   profile_packages = 0
   predicted_packages = 0
   anomaly_errors = 0
+  throughput_check = 0
 
   bandwidth = 0.0
   bandwidth_checktime = pd.Timedelta('1m') 
@@ -172,7 +174,7 @@ if __name__ == "__main__":
   test_thread.start()
   throughput_thread.start()
 
-  sniff(iface="root-eth0", filter="ip", prn=createProfile, timeout=pd.Timedelta('10m').total_seconds())
+  sniff(iface="root-eth0", filter="ip", prn=createProfile, timeout=pd.Timedelta('15m').total_seconds())
   #root --> 10.10.10.254
   #eth0 --> 10.10.10.10
 
@@ -200,10 +202,10 @@ if __name__ == "__main__":
 
   print("Initializing monitor")
 
-  sniff(iface="root-eth0", filter="ip", prn=predict, timeout=pd.Timedelta('20m').total_seconds())
+  sniff(iface="root-eth0", filter="ip", prn=predict, timeout=pd.Timedelta('45m').total_seconds())
   keep_test=False
 
   print("Throughput mean: ", throughput_mean)
   print("Throughput standart deviation: ", throughput_deviation)
   print("Anomaly errors: {}/{}".format(anomaly_errors, predicted_packages))
-  print("Throughput errors:", throughput_errors)
+  print("Throughput errors: {}/{}".format(throughput_errors, throughput_check))
